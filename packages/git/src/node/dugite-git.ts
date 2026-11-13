@@ -17,7 +17,7 @@
 import * as fs from '@theia/core/shared/fs-extra';
 import * as Path from 'path';
 import { injectable, inject, postConstruct, named } from '@theia/core/shared/inversify';
-import { git } from 'dugite-extra/lib/core/git';
+import { git, IGitResult } from 'dugite-extra/lib/core/git';
 import { push } from 'dugite-extra/lib/command/push';
 import { pull } from 'dugite-extra/lib/command/pull';
 import { clone } from 'dugite-extra/lib/command/clone';
@@ -382,8 +382,12 @@ export class DugiteGit implements Git {
         await this.ready.promise;
         const repositoryPath = this.getFsPath(repository);
         const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
-        const dugiteStatus = await getStatus(repositoryPath, true, this.limit, { exec, env });
-        return this.mapStatus(dugiteStatus, repository);
+        try {
+            const dugiteStatus = await getStatus(repositoryPath, true, this.limit, { exec, env });
+            return this.mapStatus(dugiteStatus, repository);
+        } catch (error) {
+            throw this.withRepositoryDoesNotExistCode(error);
+        }
     }
 
     async add(repository: Repository, uri: string | string[]): Promise<void> {
@@ -415,12 +419,16 @@ export class DugiteGit implements Git {
         const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
         const repositoryPath = this.getFsPath(repository);
         if (GitUtils.isBranchList(options)) {
-            if (options.type === 'current') {
-                const currentBranch = await listBranch(repositoryPath, options.type, { exec, env });
-                return currentBranch ? this.mapBranch(currentBranch) : undefined;
+            try {
+                if (options.type === 'current') {
+                    const currentBranch = await listBranch(repositoryPath, options.type, { exec, env });
+                    return currentBranch ? this.mapBranch(currentBranch) : undefined;
+                }
+                const branches = await listBranch(repositoryPath, options.type, { exec, env });
+                return Promise.all(branches.map(branch => this.mapBranch(branch)));
+            } catch (error) {
+                throw this.withRepositoryDoesNotExistCode(error);
             }
-            const branches = await listBranch(repositoryPath, options.type, { exec, env });
-            return Promise.all(branches.map(branch => this.mapBranch(branch)));
         }
         return this.manager.run(repository, () => {
             if (GitUtils.isBranchCreate(options)) {
@@ -638,7 +646,11 @@ export class DugiteGit implements Git {
                 exec,
                 env
             };
-            return git(args, repositoryPath, name, opts);
+            try {
+                return await git(args, repositoryPath, name, opts);
+            } catch (error) {
+                throw this.withRepositoryDoesNotExistCode(error);
+            }
         };
         return options?.readOnly ? op() : this.manager.run(repository, op);
     }
@@ -760,6 +772,21 @@ export class DugiteGit implements Git {
         }
     }
 
+    /**
+     * Marks the error of a Git command that failed because the path is not a Git repository (anymore)
+     * with the {@link GitUtils.RepositoryDoesNotExistErrorCode}, so that `GitUtils.isRepositoryDoesNotExistError`
+     * recognizes it on the backend and, after the RPC round trip, on the frontend. Any other error is returned as is.
+     */
+    protected withRepositoryDoesNotExistCode(error: unknown): unknown {
+        // dugite-extra `GitError` is transpiled to ES5, `instanceof` does not work; check the shape.
+        // `GitError` of this package mirrors the numeric values of the dugite enum.
+        const gitError = error instanceof Error && 'result' in error ? (error as { result?: { gitError?: number } }).result?.gitError : undefined;
+        if (gitError === GitError.NotAGitRepository) {
+            (error as Error & { code?: string }).code = GitUtils.RepositoryDoesNotExistErrorCode;
+        }
+        return error;
+    }
+
     private getCommitish(options?: Git.Options.Show): string {
         if (options && options.commitish) {
             return 'index' === options.commitish ? '' : options.commitish;
@@ -791,7 +818,12 @@ export class DugiteGit implements Git {
     private async getRemotes(repositoryPath: string): Promise<Remote[]> {
         await this.ready.promise;
         const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
-        const result = await git(['remote', '-v'], repositoryPath, 'remote', { exec, env });
+        let result: IGitResult;
+        try {
+            result = await git(['remote', '-v'], repositoryPath, 'remote', { exec, env });
+        } catch (error) {
+            throw this.withRepositoryDoesNotExistCode(error);
+        }
         const out = result.stdout || '';
         const results = out.trim().match(/\S+/g);
         if (results) {

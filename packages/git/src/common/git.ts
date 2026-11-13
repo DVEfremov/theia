@@ -897,9 +897,9 @@ export namespace GitUtils {
     }
 
     /**
-     * The error code for when the path to a repository doesn't exist.
+     * The error code for when the path to a repository doesn't exist or the path is not a Git repository anymore.
      */
-    const RepositoryDoesNotExistErrorCode = 'repository-does-not-exist-error';
+    export const RepositoryDoesNotExistErrorCode = 'repository-does-not-exist-error';
 
     /**
      * `true` if the argument is an error indicating the absence of a local Git repository.

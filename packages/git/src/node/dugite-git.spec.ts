@@ -297,6 +297,51 @@ describe('git', async function (): Promise<void> {
 
     });
 
+    describe('repository does not exist', async () => {
+
+        async function failureOf(promise: Promise<unknown>): Promise<unknown> {
+            return promise.then(() => expect.fail('The Git command should have failed.'), error => error);
+        }
+
+        it('exec should fail with the repository-does-not-exist error code when the path is not a Git repository', async () => {
+            const root = track.mkdirSync('not-a-repository-1');
+            const repository = { localUri: FileUri.create(root).toString() };
+            const git = await createGit();
+            const error = await failureOf(git.exec(repository, ['rev-parse', 'HEAD']));
+            expect(error).to.be.instanceOf(Error);
+            expect(GitUtils.isRepositoryDoesNotExistError(error)).to.be.true;
+        });
+
+        it('status, branch and remote should fail with the repository-does-not-exist error code when the path is not a Git repository', async () => {
+            const root = track.mkdirSync('not-a-repository-2');
+            const repository = { localUri: FileUri.create(root).toString() };
+            const git = await createGit();
+            expect(GitUtils.isRepositoryDoesNotExistError(await failureOf(git.status(repository)))).to.be.true;
+            expect(GitUtils.isRepositoryDoesNotExistError(await failureOf(git.branch(repository, { type: 'all' })))).to.be.true;
+            expect(GitUtils.isRepositoryDoesNotExistError(await failureOf(git.remote(repository)))).to.be.true;
+            // dugite treats the exit code 128 of `rev-parse --abbrev-ref HEAD` as "no current branch" and does not fail
+            expect(await git.branch(repository, { type: 'current' })).to.be.undefined;
+        });
+
+        it('exec should keep the repository-does-not-exist error code that dugite sets when the path does not exist', async () => {
+            const root = track.mkdirSync('not-a-repository-3');
+            const repository = { localUri: FileUri.create(path.join(root, 'missing')).toString() };
+            const git = await createGit();
+            expect(GitUtils.isRepositoryDoesNotExistError(await failureOf(git.exec(repository, ['rev-parse', 'HEAD'])))).to.be.true;
+        });
+
+        it('other Git errors should not get the repository-does-not-exist error code', async () => {
+            const root = track.mkdirSync('not-a-repository-4');
+            const repository = { localUri: FileUri.create(root).toString() };
+            await initRepository(root);
+            const git = await createGit();
+            const error = await failureOf(git.exec(repository, ['rev-parse', '--verify', 'refs/heads/missing']));
+            expect(error).to.be.instanceOf(Error);
+            expect(GitUtils.isRepositoryDoesNotExistError(error)).to.be.false;
+        });
+
+    });
+
     describe('exec', async () => {
 
         it('version', async () => {

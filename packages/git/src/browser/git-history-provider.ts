@@ -311,7 +311,7 @@ export class GitHistoryProvider implements ScmHistoryProvider {
 
             return this.historyItemRefsParser.parse(stdout);
         } catch (error) {
-            this.logger.error(error);
+            this.logError(error);
             return undefined;
         }
     }
@@ -351,7 +351,7 @@ export class GitHistoryProvider implements ScmHistoryProvider {
 
             return this.historyItemsParser.parse(stdout);
         } catch (error) {
-            this.logger.error(error);
+            this.logError(error);
             return undefined;
         }
     }
@@ -375,7 +375,7 @@ export class GitHistoryProvider implements ScmHistoryProvider {
 
             return this.historyItemChangesParser.parse(stdout, this.repository.localUri, historyItemParentId, historyItemId);
         } catch (error) {
-            this.logger.error(error);
+            this.logError(error);
             return undefined;
         }
     }
@@ -391,7 +391,7 @@ export class GitHistoryProvider implements ScmHistoryProvider {
 
             return this.historyItemsParser.parse(stdout)[0];
         } catch (error) {
-            this.logger.error(error);
+            this.logError(error);
             return undefined;
         }
     }
@@ -403,7 +403,13 @@ export class GitHistoryProvider implements ScmHistoryProvider {
     protected incrementListeners(): void {
         this.listenerCount++;
         if (this.listenerCount === 1 && !this.onGitEventDisposable) {
-            this.onGitEventDisposable = this.repositoryTracker.onGitEvent(this.handleGitStatusChange, this);
+            this.onGitEventDisposable = this.repositoryTracker.onGitEvent(event => this.handleGitStatusChange(event).catch(error => this.logError(error)));
+            // The tracker does not repeat the status it has already published, so handle the stored one for the first listener;
+            // handling the same status again changes nothing. Deferred, because the emitter calls this hook before adding the listener.
+            const status = this.provider.getStatus();
+            if (status) {
+                Promise.resolve().then(() => this.handleGitStatusChange({ source: this.repository, status })).catch(error => this.logError(error));
+            }
         }
     }
 
@@ -584,7 +590,7 @@ export class GitHistoryProvider implements ScmHistoryProvider {
             cachedBaseRefId = (await this.git.exec(this.repository, ['config', '--get', '--local', baseRefConfigKey],
                 { successExitCodes: [0, 1], readOnly: true })).stdout.trim();
         } catch (error) {
-            this.logger.warn(error);
+            this.logError(error, 'warn');
         }
 
         if (cachedBaseRefId) {
@@ -600,7 +606,7 @@ export class GitHistoryProvider implements ScmHistoryProvider {
             try {
                 await this.git.exec(this.repository, ['config', '--local', baseRefConfigKey, baseRef.id]);
             } catch (error) {
-                this.logger.warn(error);
+                this.logError(error, 'warn');
             }
         }
 
@@ -663,7 +669,7 @@ export class GitHistoryProvider implements ScmHistoryProvider {
             }
             return result;
         } catch (error) {
-            this.logger.error(error);
+            this.logError(error);
             return [];
         }
     }
@@ -727,7 +733,7 @@ export class GitHistoryProvider implements ScmHistoryProvider {
             const remotes = await this.git.remote(this.repository);
             return remotes.find(remote => remote === 'origin') ?? remotes[0];
         } catch (error) {
-            this.logger.error(error);
+            this.logError(error);
         }
         return undefined;
     }
@@ -740,12 +746,24 @@ export class GitHistoryProvider implements ScmHistoryProvider {
                 return stdout.trim();
             }
         } catch (error) {
-            this.logger.error(error);
+            this.logError(error);
         }
         return undefined;
     }
 
     protected async getEmptyTree(): Promise<string> {
         return (await this.git.exec(this.repository, ['hash-object', '-t', 'tree', '/dev/null'], { readOnly: true })).stdout.trim();
+    }
+
+    /**
+     * Logs the error of a Git command. A command that failed only because the repository does not exist anymore,
+     * e.g. its `.git` directory has been removed while the history was shown, is expected and logged at the debug level.
+     */
+    protected logError(error: unknown, level: 'error' | 'warn' = 'error'): void {
+        if (GitUtils.isRepositoryDoesNotExistError(error)) {
+            this.logger.debug('The Git repository does not exist anymore.', this.repository.localUri);
+            return;
+        }
+        this.logger[level](error);
     }
 }
